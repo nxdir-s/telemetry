@@ -26,7 +26,7 @@ Example Lambda Setup
 ```go
 func main() {
     ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
+    defer cancel()
 
     logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
     slog.SetDefault(logger)
