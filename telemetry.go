@@ -19,6 +19,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 
+	otelpyroscope "github.com/grafana/otel-profiling-go"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -36,11 +37,12 @@ type ShutdownFuncs []func(context.Context) error
 type CleanupFunc func(context.Context)
 
 type Config struct {
-	ServiceName  string
-	OtelEndpoint string
-	TlsConfig    *tls.Config
-	Lambda       bool
-	Insecure     bool
+	ServiceName        string
+	OtelEndpoint       string
+	TlsConfig          *tls.Config
+	Lambda             bool
+	Insecure           bool
+	EnableSpanProfiles bool
 }
 
 // InitProviders initializes trace and metric providers, and adds a tracer and meter to the context
@@ -57,7 +59,7 @@ func InitProviders(ctx context.Context, cfg *Config) (context.Context, CleanupFu
 		return ctx, nil, &GrpcConnError{err}
 	}
 
-	traceProvider, err := setupTraceProvider(ctx, grpcClient, resource)
+	traceProvider, err := setupTraceProvider(ctx, grpcClient, resource, cfg.EnableSpanProfiles)
 	if err != nil {
 		return ctx, nil, err
 	}
@@ -141,7 +143,7 @@ func setupResource(ctx context.Context, cfg *Config) (*resource.Resource, error)
 }
 
 // setupTraceProvider configures a trace provider
-func setupTraceProvider(ctx context.Context, conn *grpc.ClientConn, resource *resource.Resource) (*sdktrace.TracerProvider, error) {
+func setupTraceProvider(ctx context.Context, conn *grpc.ClientConn, resource *resource.Resource, enableSpanProfiles bool) (*sdktrace.TracerProvider, error) {
 	traceExporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithGRPCConn(conn))
 	if err != nil {
 		return nil, &TraceExporterError{err}
@@ -153,13 +155,23 @@ func setupTraceProvider(ctx context.Context, conn *grpc.ClientConn, resource *re
 		sdktrace.WithSpanProcessor(sdktrace.NewBatchSpanProcessor(traceExporter)),
 	)
 
-	otel.SetTracerProvider(traceProvider)
+	setTracerProvider(traceProvider, enableSpanProfiles)
+
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
 		xray.Propagator{},
 	))
 
 	return traceProvider, nil
+}
+
+func setTracerProvider(tp trace.TracerProvider, enableSpanProfiles bool) {
+	switch enableSpanProfiles {
+	case true:
+		otel.SetTracerProvider(otelpyroscope.NewTracerProvider(tp))
+	case false:
+		otel.SetTracerProvider(tp)
+	}
 }
 
 // setupMeterProvider configures a meter provider

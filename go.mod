@@ -16,6 +16,7 @@ require (
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/grafana/otel-profiling-go v0.5.1 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.22.0 // indirect
 	go.opentelemetry.io/contrib/detectors/aws/lambda v0.55.0 // indirect
 	go.opentelemetry.io/contrib/propagators/aws v1.30.0 // indirect
