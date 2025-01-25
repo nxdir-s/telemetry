@@ -25,6 +25,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 type TracerCtxKey struct{}
@@ -39,6 +40,7 @@ type Config struct {
 	OtelEndpoint string
 	TlsConfig    *tls.Config
 	Lambda       bool
+	Insecure     bool
 }
 
 // InitProviders initializes trace and metric providers, and adds a tracer and meter to the context
@@ -47,12 +49,12 @@ func InitProviders(ctx context.Context, cfg *Config) (context.Context, CleanupFu
 
 	resource, err := setupResource(ctx, cfg)
 	if err != nil {
-		return ctx, nil, SdkResourceError{err}
+		return ctx, nil, &SdkResourceError{err}
 	}
 
-	grpcClient, err := grpc.NewClient(cfg.OtelEndpoint, grpc.WithTransportCredentials(credentials.NewTLS(cfg.TlsConfig)))
+	grpcClient, err := setupClient(cfg)
 	if err != nil {
-		return ctx, nil, GrpcConnError{err}
+		return ctx, nil, &GrpcConnError{err}
 	}
 
 	traceProvider, err := setupTraceProvider(ctx, grpcClient, resource)
@@ -87,11 +89,19 @@ func InitProviders(ctx context.Context, cfg *Config) (context.Context, CleanupFu
 	return ctx, cleanup, nil
 }
 
+func setupClient(cfg *Config) (*grpc.ClientConn, error) {
+	if cfg.Insecure {
+		return grpc.NewClient(cfg.OtelEndpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
+
+	return grpc.NewClient(cfg.OtelEndpoint, grpc.WithTransportCredentials(credentials.NewTLS(cfg.TlsConfig)))
+}
+
 // setupResource creates a resouce with the supplied config and environment variables
 func setupResource(ctx context.Context, cfg *Config) (*resource.Resource, error) {
 	resourceFromEnv, err := resource.New(ctx, resource.WithFromEnv())
 	if err != nil {
-		return nil, ResourceEnvError{err}
+		return nil, &ResourceEnvError{err}
 	}
 
 	var defaultResource *resource.Resource
@@ -100,19 +110,19 @@ func setupResource(ctx context.Context, cfg *Config) (*resource.Resource, error)
 		resourceFromEnv,
 	)
 	if err != nil {
-		return nil, DefaultResourceError{err}
+		return nil, &DefaultResourceError{err}
 	}
 
 	if cfg.Lambda {
 		detector := lambdadetector.NewResourceDetector()
 		lambdaResource, err := detector.Detect(ctx)
 		if err != nil {
-			return nil, LambdaResourceError{err}
+			return nil, &LambdaResourceError{err}
 		}
 
 		defaultResource, err = resource.Merge(lambdaResource, defaultResource)
 		if err != nil {
-			return nil, ResourceMergeError{err}
+			return nil, &ResourceMergeError{err}
 		}
 	}
 
@@ -124,7 +134,7 @@ func setupResource(ctx context.Context, cfg *Config) (*resource.Resource, error)
 		defaultResource,
 	)
 	if err != nil {
-		return nil, ResourceMergeError{err}
+		return nil, &ResourceMergeError{err}
 	}
 
 	return resource, nil
@@ -134,7 +144,7 @@ func setupResource(ctx context.Context, cfg *Config) (*resource.Resource, error)
 func setupTraceProvider(ctx context.Context, conn *grpc.ClientConn, resource *resource.Resource) (*sdktrace.TracerProvider, error) {
 	traceExporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithGRPCConn(conn))
 	if err != nil {
-		return nil, TraceExporterError{err}
+		return nil, &TraceExporterError{err}
 	}
 
 	traceProvider := sdktrace.NewTracerProvider(
@@ -156,7 +166,7 @@ func setupTraceProvider(ctx context.Context, conn *grpc.ClientConn, resource *re
 func setupMeterProvider(ctx context.Context, conn *grpc.ClientConn, resource *resource.Resource) (*sdkmetric.MeterProvider, error) {
 	metricExporter, err := otlpmetricgrpc.New(ctx, otlpmetricgrpc.WithGRPCConn(conn))
 	if err != nil {
-		return nil, MetricExporterError{err}
+		return nil, &MetricExporterError{err}
 	}
 
 	meterProvider := sdkmetric.NewMeterProvider(
@@ -176,7 +186,7 @@ func setupMeterProvider(ctx context.Context, conn *grpc.ClientConn, resource *re
 func setupLoggerProvider(ctx context.Context, conn *grpc.ClientConn, resource *resource.Resource) (context.Context, error) {
 	logExporter, err := otlploggrpc.New(ctx, otlploggrpc.WithGRPCConn(conn))
 	if err != nil {
-		return ctx, LogExporterError{err}
+		return ctx, &LogExporterError{err}
 	}
 
 	loggerProvider := sdklog.NewLoggerProvider(
@@ -203,7 +213,7 @@ func AddMeterContext(ctx context.Context, meter metric.Meter) context.Context {
 func TracerFromContext(ctx context.Context) (trace.Tracer, error) {
 	tracer, ok := ctx.Value(TracerCtxKey{}).(trace.Tracer)
 	if !ok {
-		return nil, TracerError{}
+		return nil, &TracerError{}
 	}
 
 	return tracer, nil
@@ -213,7 +223,7 @@ func TracerFromContext(ctx context.Context) (trace.Tracer, error) {
 func MeterFromContext(ctx context.Context) (metric.Meter, error) {
 	meter, ok := ctx.Value(MeterCtxKey{}).(metric.Meter)
 	if !ok {
-		return nil, MeterError{}
+		return nil, &MeterError{}
 	}
 
 	return meter, nil
@@ -223,7 +233,7 @@ func MeterFromContext(ctx context.Context) (metric.Meter, error) {
 func LogProviderFromContext(ctx context.Context) (*sdklog.LoggerProvider, error) {
 	logProvider, ok := ctx.Value(LoggerCtxKey{}).(*sdklog.LoggerProvider)
 	if !ok {
-		return nil, LogProviderError{}
+		return nil, &LogProviderError{}
 	}
 
 	return logProvider, nil
