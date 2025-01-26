@@ -9,7 +9,6 @@ import (
 	"time"
 
 	lambdadetector "go.opentelemetry.io/contrib/detectors/aws/lambda"
-	"go.opentelemetry.io/contrib/propagators/aws/xray"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
@@ -159,7 +158,7 @@ func setupTraceProvider(ctx context.Context, conn *grpc.ClientConn, resource *re
 
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
-		xray.Propagator{},
+		propagation.Baggage{},
 	))
 
 	return traceProvider, nil
