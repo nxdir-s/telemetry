@@ -10,7 +10,6 @@ Initialize the telemetry providers within `main()`
 cfg := &telemetry.Config{
     ServiceName:    os.Getenv("OTEL_SERVICE_NAME"),
     Endpoint:       os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
-    Lambda:         true,
 }
 
 ctx, cleanup, err := telemetry.InitProviders(ctx, cfg)
