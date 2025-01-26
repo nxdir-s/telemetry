@@ -63,19 +63,7 @@ func main() {
 
 Applications can be manually instrumented or you can use any of the [officially supported instrumentation libraries](https://github.com/open-telemetry/opentelemetry-go-contrib/tree/main/instrumentation)
 
-Once providers are initialized, a tracer or meter can be retrieved from the context
-
-```go
-tracer, err := telemetry.TracerFromContext(ctx)
-```
-
-```go
-meter, err := telemetry.MeterFromContext(ctx)
-```
-
 > docs: https://opentelemetry.io/docs/languages/go/instrumentation/#metrics
-
-> Note: values returned by the functions above can be nil pointers, make sure to have proper validations before using them
 
 <br />
 

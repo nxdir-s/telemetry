@@ -28,10 +28,6 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-type TracerCtxKey struct{}
-type MeterCtxKey struct{}
-type LoggerCtxKey struct{}
-
 type ShutdownFuncs []func(context.Context) error
 type CleanupFunc func(context.Context)
 
@@ -69,12 +65,6 @@ func InitProviders(ctx context.Context, cfg *Config) (context.Context, CleanupFu
 		return ctx, nil, err
 	}
 	shutdown = append(shutdown, meterProvider.Shutdown)
-
-	tracer := traceProvider.Tracer(cfg.ServiceName)
-	meter := meterProvider.Meter(cfg.ServiceName)
-
-	ctx = context.WithValue(ctx, TracerCtxKey{}, tracer)
-	ctx = context.WithValue(ctx, MeterCtxKey{}, meter)
 
 	cleanup := func(ctx context.Context) {
 		var err error
