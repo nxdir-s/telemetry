@@ -16,24 +16,12 @@ func (e *GrpcConnError) Error() string {
 	return "failed to create gRPC connection to collector: " + e.err.Error()
 }
 
-type TracerError struct{}
-
-func (e *TracerError) Error() string {
-	return "failed to type cast tracer"
-}
-
 type ResourceEnvError struct {
 	err error
 }
 
 func (e *ResourceEnvError) Error() string {
 	return "failed to create resource from environment variables: " + e.err.Error()
-}
-
-type MeterError struct{}
-
-func (e *MeterError) Error() string {
-	return "failed to type cast meter"
 }
 
 type DefaultResourceError struct {
