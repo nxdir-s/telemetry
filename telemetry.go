@@ -13,7 +13,6 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
-	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
@@ -184,10 +183,10 @@ func setupMeterProvider(ctx context.Context, conn *grpc.ClientConn, resource *re
 }
 
 // setupLoggerProvider configures a logger provider and adds it to the context. Feature still in BETA
-func setupLoggerProvider(ctx context.Context, conn *grpc.ClientConn, resource *resource.Resource) (context.Context, error) {
+func setupLoggerProvider(ctx context.Context, conn *grpc.ClientConn, resource *resource.Resource) (*sdklog.LoggerProvider, error) {
 	logExporter, err := otlploggrpc.New(ctx, otlploggrpc.WithGRPCConn(conn))
 	if err != nil {
-		return ctx, &LogExporterError{err}
+		return nil, &LogExporterError{err}
 	}
 
 	loggerProvider := sdklog.NewLoggerProvider(
@@ -195,47 +194,5 @@ func setupLoggerProvider(ctx context.Context, conn *grpc.ClientConn, resource *r
 		sdklog.WithProcessor(sdklog.NewBatchProcessor(logExporter)),
 	)
 
-	ctx = context.WithValue(ctx, LoggerCtxKey{}, loggerProvider)
-
-	return ctx, nil
-}
-
-// AddTracerContext adds the tracer to the context
-func AddTracerContext(ctx context.Context, tracer trace.Tracer) context.Context {
-	return context.WithValue(ctx, TracerCtxKey{}, tracer)
-}
-
-// AddMeterContext adds the meter to the context
-func AddMeterContext(ctx context.Context, meter metric.Meter) context.Context {
-	return context.WithValue(ctx, MeterCtxKey{}, meter)
-}
-
-// TracerFromContext checks the context for a tracer. The returned value can be nil
-func TracerFromContext(ctx context.Context) (trace.Tracer, error) {
-	tracer, ok := ctx.Value(TracerCtxKey{}).(trace.Tracer)
-	if !ok {
-		return nil, &TracerError{}
-	}
-
-	return tracer, nil
-}
-
-// MeterFromContext checks the context for a meter. The returned value can be nil
-func MeterFromContext(ctx context.Context) (metric.Meter, error) {
-	meter, ok := ctx.Value(MeterCtxKey{}).(metric.Meter)
-	if !ok {
-		return nil, &MeterError{}
-	}
-
-	return meter, nil
-}
-
-// LogProviderFromContext checks the context for a logger provider. The returned value can be nil
-func LogProviderFromContext(ctx context.Context) (*sdklog.LoggerProvider, error) {
-	logProvider, ok := ctx.Value(LoggerCtxKey{}).(*sdklog.LoggerProvider)
-	if !ok {
-		return nil, &LogProviderError{}
-	}
-
-	return logProvider, nil
+	return loggerProvider, nil
 }
