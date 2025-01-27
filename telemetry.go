@@ -39,29 +39,29 @@ type Config struct {
 	EnableSpanProfiles bool
 }
 
-// InitProviders initializes trace and metric providers, and adds a tracer and meter to the context
-func InitProviders(ctx context.Context, cfg *Config) (context.Context, CleanupFunc, error) {
+// InitProviders initializes trace and metric providers
+func InitProviders(ctx context.Context, cfg *Config) (CleanupFunc, error) {
 	shutdown := make(ShutdownFuncs, 0, 2)
 
 	resource, err := setupResource(ctx, cfg)
 	if err != nil {
-		return ctx, nil, &SdkResourceError{err}
+		return nil, &SdkResourceError{err}
 	}
 
 	grpcClient, err := setupClient(cfg)
 	if err != nil {
-		return ctx, nil, &GrpcConnError{err}
+		return nil, &GrpcConnError{err}
 	}
 
 	traceProvider, err := setupTraceProvider(ctx, grpcClient, resource, cfg.EnableSpanProfiles)
 	if err != nil {
-		return ctx, nil, err
+		return nil, err
 	}
 	shutdown = append(shutdown, traceProvider.Shutdown)
 
 	meterProvider, err := setupMeterProvider(ctx, grpcClient, resource)
 	if err != nil {
-		return ctx, nil, err
+		return nil, err
 	}
 	shutdown = append(shutdown, meterProvider.Shutdown)
 
@@ -76,7 +76,7 @@ func InitProviders(ctx context.Context, cfg *Config) (context.Context, CleanupFu
 		}
 	}
 
-	return ctx, cleanup, nil
+	return cleanup, nil
 }
 
 func setupClient(cfg *Config) (*grpc.ClientConn, error) {
