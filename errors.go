@@ -1,79 +1,79 @@
 package telemetry
 
-type SdkResourceError struct {
+type ErrSdkResource struct {
 	err error
 }
 
-func (e *SdkResourceError) Error() string {
+func (e *ErrSdkResource) Error() string {
 	return "failed to create otel sdk resource: " + e.err.Error()
 }
 
-type GrpcConnError struct {
+type ErrGrpcConn struct {
 	err error
 }
 
-func (e *GrpcConnError) Error() string {
+func (e *ErrGrpcConn) Error() string {
 	return "failed to create gRPC connection to collector: " + e.err.Error()
 }
 
-type ResourceEnvError struct {
+type ErrResourceEnv struct {
 	err error
 }
 
-func (e *ResourceEnvError) Error() string {
+func (e *ErrResourceEnv) Error() string {
 	return "failed to create resource from environment variables: " + e.err.Error()
 }
 
-type DefaultResourceError struct {
+type ErrDefaultResource struct {
 	err error
 }
 
-func (e *DefaultResourceError) Error() string {
+func (e *ErrDefaultResource) Error() string {
 	return "failed to create default resource: " + e.err.Error()
 }
 
-type LogProviderError struct{}
+type ErrLogProvider struct{}
 
-func (e *LogProviderError) Error() string {
+func (e *ErrLogProvider) Error() string {
 	return "failed to type cast logger provider"
 }
 
-type LambdaResourceError struct {
+type ErrLambdaResource struct {
 	err error
 }
 
-func (e *LambdaResourceError) Error() string {
+func (e *ErrLambdaResource) Error() string {
 	return "failed to create lambda resource: " + e.err.Error()
 }
 
-type ResourceMergeError struct {
+type ErrResourceMerge struct {
 	err error
 }
 
-func (e *ResourceMergeError) Error() string {
+func (e *ErrResourceMerge) Error() string {
 	return "failed to merge lambda resource: " + e.err.Error()
 }
 
-type MetricExporterError struct {
+type ErrMetricExporter struct {
 	err error
 }
 
-func (e *MetricExporterError) Error() string {
+func (e *ErrMetricExporter) Error() string {
 	return "failed to create metric exporter: " + e.err.Error()
 }
 
-type TraceExporterError struct {
+type ErrTraceExporter struct {
 	err error
 }
 
-func (e *TraceExporterError) Error() string {
+func (e *ErrTraceExporter) Error() string {
 	return "failed to create trace exporter: " + e.err.Error()
 }
 
-type LogExporterError struct {
+type ErrLogExporter struct {
 	err error
 }
 
-func (e *LogExporterError) Error() string {
+func (e *ErrLogExporter) Error() string {
 	return "failed to create log exporter: " + e.err.Error()
 }

@@ -3,7 +3,6 @@ package telemetry
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
@@ -27,8 +27,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-type ShutdownFuncs []func(context.Context) error
-type CleanupFunc func(context.Context)
+type CleanupFunc func()
 
 type Config struct {
 	ServiceName        string
@@ -37,42 +36,65 @@ type Config struct {
 	Lambda             bool
 	Insecure           bool
 	EnableSpanProfiles bool
+	EnableLogs         bool // BETA
 }
 
 // InitProviders initializes trace and metric providers
 func InitProviders(ctx context.Context, cfg *Config) (CleanupFunc, error) {
-	shutdown := make(ShutdownFuncs, 0, 2)
-
 	resource, err := setupResource(ctx, cfg)
 	if err != nil {
-		return nil, &SdkResourceError{err}
+		return nil, &ErrSdkResource{err}
 	}
 
-	grpcClient, err := setupClient(cfg)
-	if err != nil {
-		return nil, &GrpcConnError{err}
-	}
-
-	traceProvider, err := setupTraceProvider(ctx, grpcClient, resource, cfg.EnableSpanProfiles)
-	if err != nil {
+	if err := setupTraceProvider(ctx, cfg, resource); err != nil {
 		return nil, err
 	}
-	shutdown = append(shutdown, traceProvider.Shutdown)
 
-	meterProvider, err := setupMeterProvider(ctx, grpcClient, resource)
-	if err != nil {
+	if err := setupMeterProvider(ctx, cfg, resource); err != nil {
 		return nil, err
 	}
-	shutdown = append(shutdown, meterProvider.Shutdown)
 
-	cleanup := func(ctx context.Context) {
-		var err error
-		for _, fn := range shutdown {
-			err = errors.Join(err, fn(ctx))
+	if cfg.EnableLogs {
+		if err := setupLoggerProvider(ctx, cfg, resource); err != nil {
+			return nil, err
+		}
+	}
+
+	cleanup := func() {
+		tp, ok := otel.GetTracerProvider().(*sdktrace.TracerProvider)
+		if !ok {
+			fmt.Fprint(os.Stdout, "failed sdktrace.TracerProvider type assertion\n")
+			return
 		}
 
-		if err != nil {
-			fmt.Fprintf(os.Stdout, "error shutting down telemetry providers: %s\n", err.Error())
+		if err := tp.Shutdown(context.Background()); err != nil {
+			fmt.Fprintf(os.Stdout, "failed to shutdown trace provider: %s\n", err.Error())
+			return
+		}
+
+		mp, ok := otel.GetMeterProvider().(*sdkmetric.MeterProvider)
+		if !ok {
+			fmt.Fprint(os.Stdout, "failed sdkmetric.MeterProvider type assertion\n")
+			return
+		}
+
+		if err := mp.Shutdown(context.Background()); err != nil {
+			fmt.Fprintf(os.Stdout, "failed to shutdown meter provider: %s\n", err.Error())
+			return
+		}
+
+		if cfg.EnableLogs {
+			lp, ok := global.GetLoggerProvider().(*sdklog.LoggerProvider)
+			if !ok {
+				fmt.Fprint(os.Stdout, "failed sdklog.LoggerProvider type assertion\n")
+				return
+			}
+
+			if err := lp.Shutdown(context.Background()); err != nil {
+				fmt.Fprintf(os.Stdout, "failed to shutdown logger provider: %s\n", err.Error())
+				return
+			}
+
 		}
 	}
 
@@ -91,7 +113,7 @@ func setupClient(cfg *Config) (*grpc.ClientConn, error) {
 func setupResource(ctx context.Context, cfg *Config) (*resource.Resource, error) {
 	resourceFromEnv, err := resource.New(ctx, resource.WithFromEnv())
 	if err != nil {
-		return nil, &ResourceEnvError{err}
+		return nil, &ErrResourceEnv{err}
 	}
 
 	var defaultResource *resource.Resource
@@ -100,19 +122,19 @@ func setupResource(ctx context.Context, cfg *Config) (*resource.Resource, error)
 		resourceFromEnv,
 	)
 	if err != nil {
-		return nil, &DefaultResourceError{err}
+		return nil, &ErrDefaultResource{err}
 	}
 
 	if cfg.Lambda {
 		detector := lambdadetector.NewResourceDetector()
 		lambdaResource, err := detector.Detect(ctx)
 		if err != nil {
-			return nil, &LambdaResourceError{err}
+			return nil, &ErrLambdaResource{err}
 		}
 
 		defaultResource, err = resource.Merge(lambdaResource, defaultResource)
 		if err != nil {
-			return nil, &ResourceMergeError{err}
+			return nil, &ErrResourceMerge{err}
 		}
 	}
 
@@ -124,33 +146,56 @@ func setupResource(ctx context.Context, cfg *Config) (*resource.Resource, error)
 		defaultResource,
 	)
 	if err != nil {
-		return nil, &ResourceMergeError{err}
+		return nil, &ErrResourceMerge{err}
 	}
 
 	return resource, nil
 }
 
 // setupTraceProvider configures a trace provider
-func setupTraceProvider(ctx context.Context, conn *grpc.ClientConn, resource *resource.Resource, enableSpanProfiles bool) (*sdktrace.TracerProvider, error) {
-	traceExporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithGRPCConn(conn))
+func setupTraceProvider(ctx context.Context, cfg *Config, resource *resource.Resource) error {
+	conn, err := setupClient(cfg)
 	if err != nil {
-		return nil, &TraceExporterError{err}
+		return &ErrGrpcConn{err}
 	}
 
-	traceProvider := sdktrace.NewTracerProvider(
-		sdktrace.WithResource(resource),
-		sdktrace.WithSampler(sdktrace.AlwaysSample()),
-		sdktrace.WithSpanProcessor(sdktrace.NewBatchSpanProcessor(traceExporter)),
-	)
+	traceExporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithGRPCConn(conn))
+	if err != nil {
+		return &ErrTraceExporter{err}
+	}
 
-	setTracerProvider(traceProvider, enableSpanProfiles)
+	traceProvider := getTraceProvider(traceExporter, resource, cfg.Lambda)
 
+	setTracerProvider(traceProvider, cfg.EnableSpanProfiles)
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
 		propagation.Baggage{},
 	))
 
-	return traceProvider, nil
+	return nil
+}
+
+func getTraceProvider(exporter sdktrace.SpanExporter, resource *resource.Resource, lambda bool) *sdktrace.TracerProvider {
+	switch lambda {
+	case true:
+		return sdktrace.NewTracerProvider(
+			sdktrace.WithResource(resource),
+			sdktrace.WithSampler(sdktrace.AlwaysSample()),
+			sdktrace.WithSyncer(exporter),
+		)
+	case false:
+		return sdktrace.NewTracerProvider(
+			sdktrace.WithResource(resource),
+			sdktrace.WithSampler(sdktrace.AlwaysSample()),
+			sdktrace.WithBatcher(exporter),
+		)
+	default:
+		return sdktrace.NewTracerProvider(
+			sdktrace.WithResource(resource),
+			sdktrace.WithSampler(sdktrace.AlwaysSample()),
+			sdktrace.WithBatcher(exporter),
+		)
+	}
 }
 
 func setTracerProvider(tp trace.TracerProvider, enableSpanProfiles bool) {
@@ -163,30 +208,63 @@ func setTracerProvider(tp trace.TracerProvider, enableSpanProfiles bool) {
 }
 
 // setupMeterProvider configures a meter provider
-func setupMeterProvider(ctx context.Context, conn *grpc.ClientConn, resource *resource.Resource) (*sdkmetric.MeterProvider, error) {
-	metricExporter, err := otlpmetricgrpc.New(ctx, otlpmetricgrpc.WithGRPCConn(conn))
+func setupMeterProvider(ctx context.Context, cfg *Config, resource *resource.Resource) error {
+	conn, err := setupClient(cfg)
 	if err != nil {
-		return nil, &MetricExporterError{err}
+		return &ErrGrpcConn{err}
 	}
 
-	meterProvider := sdkmetric.NewMeterProvider(
-		sdkmetric.WithResource(resource),
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(
-			metricExporter,
-			sdkmetric.WithInterval(1*time.Second),
-		)),
-	)
+	metricExporter, err := otlpmetricgrpc.New(ctx, otlpmetricgrpc.WithGRPCConn(conn))
+	if err != nil {
+		return &ErrMetricExporter{err}
+	}
+
+	meterProvider := getMeterProvider(metricExporter, resource, cfg.Lambda)
 
 	otel.SetMeterProvider(meterProvider)
 
-	return meterProvider, nil
+	return nil
 }
 
-// setupLoggerProvider configures a logger provider and adds it to the context. Feature still in BETA
-func setupLoggerProvider(ctx context.Context, conn *grpc.ClientConn, resource *resource.Resource) (*sdklog.LoggerProvider, error) {
+func getMeterProvider(exporter sdkmetric.Exporter, resource *resource.Resource, lambda bool) *sdkmetric.MeterProvider {
+	switch lambda {
+	case true:
+		return sdkmetric.NewMeterProvider(
+			sdkmetric.WithResource(resource),
+			sdkmetric.WithReader(sdkmetric.NewPeriodicReader(
+				exporter,
+				sdkmetric.WithInterval(500*time.Millisecond),
+			)),
+		)
+	case false:
+		return sdkmetric.NewMeterProvider(
+			sdkmetric.WithResource(resource),
+			sdkmetric.WithReader(sdkmetric.NewPeriodicReader(
+				exporter,
+				sdkmetric.WithInterval(1*time.Second),
+			)),
+		)
+	default:
+		return sdkmetric.NewMeterProvider(
+			sdkmetric.WithResource(resource),
+			sdkmetric.WithReader(sdkmetric.NewPeriodicReader(
+				exporter,
+				sdkmetric.WithInterval(1*time.Second),
+			)),
+		)
+	}
+}
+
+// setupLoggerProvider configures a logger provider. Feature still in BETA
+func setupLoggerProvider(ctx context.Context, cfg *Config, resource *resource.Resource) error {
+	conn, err := setupClient(cfg)
+	if err != nil {
+		return &ErrGrpcConn{err}
+	}
+
 	logExporter, err := otlploggrpc.New(ctx, otlploggrpc.WithGRPCConn(conn))
 	if err != nil {
-		return nil, &LogExporterError{err}
+		return &ErrLogExporter{err}
 	}
 
 	loggerProvider := sdklog.NewLoggerProvider(
@@ -194,5 +272,7 @@ func setupLoggerProvider(ctx context.Context, conn *grpc.ClientConn, resource *r
 		sdklog.WithProcessor(sdklog.NewBatchProcessor(logExporter)),
 	)
 
-	return loggerProvider, nil
+	global.SetLoggerProvider(loggerProvider)
+
+	return nil
 }
