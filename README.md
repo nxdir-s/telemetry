@@ -8,11 +8,11 @@ Initialize the telemetry providers within `main()`
 
 ```go
 cfg := &telemetry.Config{
-    ServiceName:    os.Getenv("OTEL_SERVICE_NAME"),
-    Endpoint:       os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+    ServiceName:        os.Getenv("OTEL_SERVICE_NAME"),
+    OtelEndpoint:       os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 }
 
-ctx, cleanup, err := telemetry.InitProviders(ctx, cfg)
+cleanup, err := telemetry.InitProviders(ctx, cfg)
 if err != nil {
     // handle error
 }
@@ -31,9 +31,9 @@ func main() {
     slog.SetDefault(logger)
 
     cfg := &telemetry.Config{
-        ServiceName:    os.Getenv("OTEL_SERVICE_NAME"),
-        Endpoint:       os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
-        Lambda:         true,
+        ServiceName:        os.Getenv("OTEL_SERVICE_NAME"),
+        OtelEndpoint:       os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+        Lambda:             true,
     }
 
     cleanup, err := telemetry.InitProviders(ctx, cfg)
@@ -53,8 +53,7 @@ func main() {
         ),
         lambda.WithContext(ctx),
         lambda.WithEnableSIGTERM(func() {
-            cancel()
-            cleanup()
+            cancel() cleanup()
         }),
     )
 }
