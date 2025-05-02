@@ -36,7 +36,7 @@ func main() {
         Lambda:         true,
     }
 
-    ctx, cleanup, err := telemetry.InitProviders(ctx, cfg)
+    cleanup, err := telemetry.InitProviders(ctx, cfg)
     if err != nil {
         // handle error
     }
@@ -54,6 +54,7 @@ func main() {
         lambda.WithContext(ctx),
         lambda.WithEnableSIGTERM(func() {
             cancel()
+            cleanup()
         }),
     )
 }
