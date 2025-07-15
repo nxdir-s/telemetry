@@ -53,7 +53,8 @@ func main() {
         ),
         lambda.WithContext(ctx),
         lambda.WithEnableSIGTERM(func() {
-            cancel() cleanup()
+            cleanup()
+            cancel()
         }),
     )
 }
