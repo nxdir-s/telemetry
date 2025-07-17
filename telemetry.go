@@ -4,24 +4,28 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"net/http"
+	"net/http/httptrace"
 	"os"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/httptrace/otelhttptrace"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
 	lambdadetector "go.opentelemetry.io/contrib/detectors/aws/lambda"
+	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
+
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
-	"go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/propagation"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 
 	otelpyroscope "github.com/grafana/otel-profiling-go"
-	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -114,7 +118,6 @@ type Config struct {
 	Lambda             bool
 	Insecure           bool
 	EnableSpanProfiles bool
-	EnableLogs         bool // BETA
 }
 
 // InitProviders initializes trace and metric providers
@@ -132,48 +135,39 @@ func InitProviders(ctx context.Context, cfg *Config) (CleanupFunc, error) {
 		return nil, err
 	}
 
-	if cfg.EnableLogs {
-		if err := setupLoggerProvider(ctx, cfg, resource); err != nil {
-			return nil, err
-		}
-	}
-
 	cleanup := func() {
-		tp, ok := otel.GetTracerProvider().(*sdktrace.TracerProvider)
-		if !ok {
-			fmt.Fprint(os.Stdout, "failed sdktrace.TracerProvider type assertion\n")
-			return
-		}
 
-		if err := tp.Shutdown(context.Background()); err != nil {
-			fmt.Fprintf(os.Stdout, "failed to shutdown trace provider: %s\n", err.Error())
-			return
-		}
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+			defer cancel()
 
-		mp, ok := otel.GetMeterProvider().(*sdkmetric.MeterProvider)
-		if !ok {
-			fmt.Fprint(os.Stdout, "failed sdkmetric.MeterProvider type assertion\n")
-			return
-		}
-
-		if err := mp.Shutdown(context.Background()); err != nil {
-			fmt.Fprintf(os.Stdout, "failed to shutdown meter provider: %s\n", err.Error())
-			return
-		}
-
-		if cfg.EnableLogs {
-			lp, ok := global.GetLoggerProvider().(*sdklog.LoggerProvider)
+			tp, ok := otel.GetTracerProvider().(*sdktrace.TracerProvider)
 			if !ok {
-				fmt.Fprint(os.Stdout, "failed sdklog.LoggerProvider type assertion\n")
+				fmt.Fprint(os.Stdout, "failed sdktrace.TracerProvider type assertion\n")
 				return
 			}
 
-			if err := lp.Shutdown(context.Background()); err != nil {
-				fmt.Fprintf(os.Stdout, "failed to shutdown logger provider: %s\n", err.Error())
+			if err := tp.Shutdown(ctx); err != nil {
+				fmt.Fprintf(os.Stdout, "failed to shutdown trace provider: %s\n", err.Error())
+				return
+			}
+		}()
+
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+			defer cancel()
+
+			mp, ok := otel.GetMeterProvider().(*sdkmetric.MeterProvider)
+			if !ok {
+				fmt.Fprint(os.Stdout, "failed sdkmetric.MeterProvider type assertion\n")
 				return
 			}
 
-		}
+			if err := mp.Shutdown(ctx); err != nil {
+				fmt.Fprintf(os.Stdout, "failed to shutdown meter provider: %s\n", err.Error())
+				return
+			}
+		}()
 	}
 
 	return cleanup, nil
@@ -333,24 +327,19 @@ func getMeterProvider(exporter sdkmetric.Exporter, resource *resource.Resource, 
 	}
 }
 
-// setupLoggerProvider configures a logger provider. Feature still in BETA
-func setupLoggerProvider(ctx context.Context, cfg *Config, resource *resource.Resource) error {
-	conn, err := setupClient(cfg)
-	if err != nil {
-		return &ErrGrpcConn{err}
-	}
-
-	logExporter, err := otlploggrpc.New(ctx, otlploggrpc.WithGRPCConn(conn))
-	if err != nil {
-		return &ErrLogExporter{err}
-	}
-
-	loggerProvider := sdklog.NewLoggerProvider(
-		sdklog.WithResource(resource),
-		sdklog.WithProcessor(sdklog.NewBatchProcessor(logExporter)),
+// NewTransport wraps the supplied round tripper with otel instrumentation
+func NewTransport(transport http.RoundTripper) http.RoundTripper {
+	return otelhttp.NewTransport(
+		transport,
+		otelhttp.WithTracerProvider(otel.GetTracerProvider()),
+		otelhttp.WithMeterProvider(otel.GetMeterProvider()),
+		otelhttp.WithClientTrace(
+			func(ctx context.Context) *httptrace.ClientTrace {
+				return otelhttptrace.NewClientTrace(ctx,
+					otelhttptrace.WithoutSubSpans(),
+					otelhttptrace.WithTracerProvider(otel.GetTracerProvider()),
+				)
+			},
+		),
 	)
-
-	global.SetLoggerProvider(loggerProvider)
-
-	return nil
 }
