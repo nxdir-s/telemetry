@@ -13,7 +13,6 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	lambdadetector "go.opentelemetry.io/contrib/detectors/aws/lambda"
-	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
@@ -82,7 +81,7 @@ type ErrResourceMerge struct {
 }
 
 func (e *ErrResourceMerge) Error() string {
-	return "failed to merge lambda resource: " + e.err.Error()
+	return "failed to merge otel resource: " + e.err.Error()
 }
 
 type ErrMetricExporter struct {
@@ -188,8 +187,8 @@ func setupResource(ctx context.Context, cfg *Config) (*resource.Resource, error)
 		return nil, &ErrResourceEnv{err}
 	}
 
-	var defaultResource *resource.Resource
-	defaultResource, err = resource.Merge(
+	var otelResource *resource.Resource
+	otelResource, err = resource.Merge(
 		resource.Default(),
 		resourceFromEnv,
 	)
@@ -204,24 +203,13 @@ func setupResource(ctx context.Context, cfg *Config) (*resource.Resource, error)
 			return nil, &ErrLambdaResource{err}
 		}
 
-		defaultResource, err = resource.Merge(lambdaResource, defaultResource)
+		otelResource, err = resource.Merge(lambdaResource, otelResource)
 		if err != nil {
 			return nil, &ErrResourceMerge{err}
 		}
 	}
 
-	resource, err := resource.Merge(
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceNameKey.String(cfg.ServiceName),
-		),
-		defaultResource,
-	)
-	if err != nil {
-		return nil, &ErrResourceMerge{err}
-	}
-
-	return resource, nil
+	return otelResource, nil
 }
 
 // setupTraceProvider configures a trace provider
