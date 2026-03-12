@@ -114,6 +114,7 @@ type Config struct {
 	ServiceName        string
 	OtelEndpoint       string
 	TlsConfig          *tls.Config
+	CustomResource     *resource.Resource
 	Lambda             bool
 	Insecure           bool
 	EnableSpanProfiles bool
@@ -121,9 +122,14 @@ type Config struct {
 
 // InitProviders initializes trace and metric providers
 func InitProviders(ctx context.Context, cfg *Config) (CleanupFunc, error) {
+	var resource *resource.Resource
 	resource, err := setupResource(ctx, cfg)
 	if err != nil {
 		return nil, &ErrSdkResource{err}
+	}
+
+	if cfg.CustomResource != nil {
+		resource = cfg.CustomResource
 	}
 
 	if err := setupTraceProvider(ctx, cfg, resource); err != nil {
