@@ -78,36 +78,3 @@ defer span.End()
 > docs: https://opentelemetry.io/docs/languages/go/instrumentation/#creating-spans
 
 <br />
-
-### AWS SDK
-
-Add the following after initialization to instrument the aws sdk
-
-```go
-// init aws config
-cfg, err := awsConfig.LoadDefaultConfig(ctx)
-if err != nil {
-    // handle error
-}
-
-// instrument all aws clients
-otelaws.AppendMiddlewares(&cfg.APIOptions)
-```
-
-<br />
-
-### Host and Runtime Metrics
-
-Add the following after initialization to instrument host and runtime metric collection
-
-```go
-err = host.Start(host.WithMeterProvider(otel.GetMeterProvider()))
-if err != nil {
-    // handle error
-}
-
-err = runtime.Start(runtime.WithMeterProvider(otel.GetMeterProvider()), runtime.WithMinimumReadMemStatsInterval(time.Second))
-if err != nil {
-    // handle error
-}
-```
