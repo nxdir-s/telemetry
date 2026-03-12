@@ -9,21 +9,24 @@ import (
 	"os"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/httptrace/otelhttptrace"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	lambdadetector "go.opentelemetry.io/contrib/detectors/aws/lambda"
-
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
-	"go.opentelemetry.io/otel/trace"
-
-	otelpyroscope "github.com/grafana/otel-profiling-go"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+
+	otelpyroscope "github.com/grafana/otel-profiling-go"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -108,6 +111,37 @@ func (e *ErrLogExporter) Error() string {
 	return "failed to create log exporter: " + e.err.Error()
 }
 
+type ErrAwsInstrumentation struct {
+	err error
+}
+
+func (e *ErrAwsInstrumentation) Error() string {
+	return "failed to setup aws instrumentation: " + e.err.Error()
+}
+
+type Option func() error
+
+func WithAwsInstrumentation(ctx context.Context, cfg *aws.Config) Option {
+	return func() error {
+		var config aws.Config
+
+		switch cfg == nil {
+		case true:
+			var err error
+			config, err = awsconfig.LoadDefaultConfig(ctx)
+			if err != nil {
+				return &ErrAwsInstrumentation{err}
+			}
+		case false:
+			config = *cfg
+		}
+
+		otelaws.AppendMiddlewares(&config.APIOptions)
+
+		return nil
+	}
+}
+
 type CleanupFunc func()
 
 type Config struct {
@@ -121,7 +155,7 @@ type Config struct {
 }
 
 // InitProviders initializes trace and metric providers
-func InitProviders(ctx context.Context, cfg *Config) (CleanupFunc, error) {
+func InitProviders(ctx context.Context, cfg *Config, opts ...Option) (CleanupFunc, error) {
 	var resource *resource.Resource
 	resource, err := setupResource(ctx, cfg)
 	if err != nil {
@@ -173,6 +207,12 @@ func InitProviders(ctx context.Context, cfg *Config) (CleanupFunc, error) {
 				return
 			}
 		}()
+	}
+
+	for _, opt := range opts {
+		if err := opt(); err != nil {
+			return nil, err
+		}
 	}
 
 	return cleanup, nil
