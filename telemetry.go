@@ -4,16 +4,11 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"net/http"
-	"net/http/httptrace"
 	"os"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/github.com/aws/aws-sdk-go-v2/otelaws"
-	"go.opentelemetry.io/contrib/instrumentation/net/http/httptrace/otelhttptrace"
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
-	lambdadetector "go.opentelemetry.io/contrib/detectors/aws/lambda"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -71,12 +66,12 @@ func (e *ErrLogProvider) Error() string {
 	return "failed to type cast logger provider"
 }
 
-type ErrLambdaResource struct {
+type ErrDetectorResource struct {
 	err error
 }
 
-func (e *ErrLambdaResource) Error() string {
-	return "failed to create lambda resource: " + e.err.Error()
+func (e *ErrDetectorResource) Error() string {
+	return "failed to detect resource: " + e.err.Error()
 }
 
 type ErrResourceMerge struct {
@@ -148,7 +143,7 @@ type Config struct {
 	ServiceName        string
 	OtelEndpoint       string
 	TlsConfig          *tls.Config
-	CustomResource     *resource.Resource
+	Detector           resource.Detector
 	Lambda             bool
 	Insecure           bool
 	EnableSpanProfiles bool
@@ -160,10 +155,6 @@ func InitProviders(ctx context.Context, cfg *Config, opts ...Option) (CleanupFun
 	resource, err := setupResource(ctx, cfg)
 	if err != nil {
 		return nil, &ErrSdkResource{err}
-	}
-
-	if cfg.CustomResource != nil {
-		resource = cfg.CustomResource
 	}
 
 	if err := setupTraceProvider(ctx, cfg, resource); err != nil {
@@ -242,14 +233,13 @@ func setupResource(ctx context.Context, cfg *Config) (*resource.Resource, error)
 		return nil, &ErrDefaultResource{err}
 	}
 
-	if cfg.Lambda {
-		detector := lambdadetector.NewResourceDetector()
-		lambdaResource, err := detector.Detect(ctx)
+	if cfg.Detector != nil {
+		cfgResource, err := cfg.Detector.Detect(ctx)
 		if err != nil {
-			return nil, &ErrLambdaResource{err}
+			return nil, &ErrDetectorResource{err}
 		}
 
-		otelResource, err = resource.Merge(lambdaResource, otelResource)
+		otelResource, err = resource.Merge(cfgResource, otelResource)
 		if err != nil {
 			return nil, &ErrResourceMerge{err}
 		}
@@ -359,21 +349,4 @@ func getMeterProvider(exporter sdkmetric.Exporter, resource *resource.Resource, 
 			)),
 		)
 	}
-}
-
-// NewTransport wraps the supplied round tripper with otel instrumentation
-func NewTransport(transport http.RoundTripper) http.RoundTripper {
-	return otelhttp.NewTransport(
-		transport,
-		otelhttp.WithTracerProvider(otel.GetTracerProvider()),
-		otelhttp.WithMeterProvider(otel.GetMeterProvider()),
-		otelhttp.WithClientTrace(
-			func(ctx context.Context) *httptrace.ClientTrace {
-				return otelhttptrace.NewClientTrace(ctx,
-					otelhttptrace.WithoutSubSpans(),
-					otelhttptrace.WithTracerProvider(otel.GetTracerProvider()),
-				)
-			},
-		),
-	)
 }
