@@ -169,11 +169,16 @@ func InitProviders(ctx context.Context, cfg *Config, opts ...Option) (CleanupFun
 		return nil, &ErrSdkResource{err}
 	}
 
-	if err := setupTraceProvider(ctx, cfg, resource); err != nil {
+	protocol, err := resolveProtocol(cfg)
+	if err != nil {
 		return nil, err
 	}
 
-	if err := setupMeterProvider(ctx, cfg, resource); err != nil {
+	if err := setupTraceProvider(ctx, cfg, protocol, resource); err != nil {
+		return nil, err
+	}
+
+	if err := setupMeterProvider(ctx, cfg, protocol, resource); err != nil {
 		return nil, err
 	}
 
