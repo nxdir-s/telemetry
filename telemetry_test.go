@@ -5,8 +5,11 @@ import (
 	"crypto/tls"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
 
 const (
@@ -41,6 +44,31 @@ func TestInitProviders(t *testing.T) {
 			opts: []Option{
 				WithAwsInstrumentation(ctx, nil),
 			},
+			expectedErr: nil,
+		},
+		{
+			cfg: &Config{
+				ServiceName:  TestServiceName,
+				OtelEndpoint: TestEndpoint,
+				TlsConfig:    &tls.Config{},
+				Views: []sdkmetric.View{
+					sdkmetric.NewView(
+						sdkmetric.Instrument{Name: "old.name"},
+						sdkmetric.Stream{Name: "new.name"},
+					),
+				},
+			},
+			opts:        []Option{},
+			expectedErr: nil,
+		},
+		{
+			cfg: &Config{
+				ServiceName:    TestServiceName,
+				OtelEndpoint:   TestEndpoint,
+				TlsConfig:      &tls.Config{},
+				ExportInterval: 5 * time.Second,
+			},
+			opts:        []Option{},
 			expectedErr: nil,
 		},
 	}

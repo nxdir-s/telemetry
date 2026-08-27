@@ -144,6 +144,8 @@ type Config struct {
 	OtelEndpoint       string
 	TlsConfig          *tls.Config
 	Detector           resource.Detector
+	Views              []sdkmetric.View
+	ExportInterval     time.Duration
 	Lambda             bool
 	Insecure           bool
 	EnableSpanProfiles bool
@@ -315,38 +317,42 @@ func setupMeterProvider(ctx context.Context, cfg *Config, resource *resource.Res
 		return &ErrMetricExporter{err}
 	}
 
-	meterProvider := getMeterProvider(metricExporter, resource, cfg.Lambda)
+	meterProvider := getMeterProvider(metricExporter, resource, cfg)
 
 	otel.SetMeterProvider(meterProvider)
 
 	return nil
 }
 
-func getMeterProvider(exporter sdkmetric.Exporter, resource *resource.Resource, lambda bool) *sdkmetric.MeterProvider {
-	switch lambda {
+// getMeterProvider builds a meter provider with a periodic reader
+func getMeterProvider(exporter sdkmetric.Exporter, resource *resource.Resource, cfg *Config) *sdkmetric.MeterProvider {
+	reader := sdkmetric.NewPeriodicReader(
+		exporter,
+		sdkmetric.WithInterval(getExportInterval(cfg)),
+	)
+
+	return sdkmetric.NewMeterProvider(getMetricOptions(reader, resource, cfg)...)
+}
+
+// getMetricOptions assembles meter provider options
+func getMetricOptions(reader sdkmetric.Reader, resource *resource.Resource, cfg *Config) []sdkmetric.Option {
+	return []sdkmetric.Option{
+		sdkmetric.WithResource(resource),
+		sdkmetric.WithReader(reader),
+		sdkmetric.WithView(cfg.Views...),
+	}
+}
+
+// getExportInterval resolves the metric export interval
+func getExportInterval(cfg *Config) time.Duration {
+	if cfg.ExportInterval > 0 {
+		return cfg.ExportInterval
+	}
+
+	switch cfg.Lambda {
 	case true:
-		return sdkmetric.NewMeterProvider(
-			sdkmetric.WithResource(resource),
-			sdkmetric.WithReader(sdkmetric.NewPeriodicReader(
-				exporter,
-				sdkmetric.WithInterval(500*time.Millisecond),
-			)),
-		)
-	case false:
-		return sdkmetric.NewMeterProvider(
-			sdkmetric.WithResource(resource),
-			sdkmetric.WithReader(sdkmetric.NewPeriodicReader(
-				exporter,
-				sdkmetric.WithInterval(1*time.Second),
-			)),
-		)
+		return 500 * time.Millisecond
 	default:
-		return sdkmetric.NewMeterProvider(
-			sdkmetric.WithResource(resource),
-			sdkmetric.WithReader(sdkmetric.NewPeriodicReader(
-				exporter,
-				sdkmetric.WithInterval(1*time.Second),
-			)),
-		)
+		return 1 * time.Second
 	}
 }
