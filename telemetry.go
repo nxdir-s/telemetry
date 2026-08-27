@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -11,7 +12,9 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -19,7 +22,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 
 	otelpyroscope "github.com/grafana/otel-profiling-go"
 
@@ -114,24 +116,32 @@ func (e *ErrAwsInstrumentation) Error() string {
 	return "failed to setup aws instrumentation: " + e.err.Error()
 }
 
+type ErrProtocol struct {
+	protocol string
+}
+
+func (e *ErrProtocol) Error() string {
+	return "unsupported otlp protocol: " + e.protocol
+}
+
+type Protocol string
+
+const (
+	ProtocolGRPC Protocol = "grpc"
+	ProtocolHTTP Protocol = "http/protobuf"
+)
+
+const OtlpProtocolEnv string = "OTEL_EXPORTER_OTLP_PROTOCOL"
+
 type Option func() error
 
 func WithAwsInstrumentation(ctx context.Context, cfg *aws.Config) Option {
 	return func() error {
-		var config aws.Config
-
-		switch cfg == nil {
-		case true:
-			var err error
-			config, err = awsconfig.LoadDefaultConfig(ctx)
-			if err != nil {
-				return &ErrAwsInstrumentation{err}
-			}
-		case false:
-			config = *cfg
+		if cfg == nil {
+			return nil
 		}
 
-		otelaws.AppendMiddlewares(&config.APIOptions)
+		otelaws.AppendMiddlewares(&cfg.APIOptions)
 
 		return nil
 	}
@@ -140,13 +150,15 @@ func WithAwsInstrumentation(ctx context.Context, cfg *aws.Config) Option {
 type CleanupFunc func()
 
 type Config struct {
-	ServiceName        string
 	OtelEndpoint       string
 	TlsConfig          *tls.Config
 	Detector           resource.Detector
+	Protocol           Protocol
+	ExportTimeout      time.Duration
 	Lambda             bool
 	Insecure           bool
 	EnableSpanProfiles bool
+	DisableRetry       bool
 }
 
 // InitProviders initializes trace and metric providers
@@ -209,6 +221,22 @@ func InitProviders(ctx context.Context, cfg *Config, opts ...Option) (CleanupFun
 	return cleanup, nil
 }
 
+func resolveProtocol(cfg *Config) (Protocol, error) {
+	protocol := cfg.Protocol
+	if len(protocol) == 0 {
+		protocol = Protocol(os.Getenv(OtlpProtocolEnv))
+	}
+
+	switch protocol {
+	case "", ProtocolGRPC:
+		return ProtocolGRPC, nil
+	case ProtocolHTTP:
+		return ProtocolHTTP, nil
+	default:
+		return "", &ErrProtocol{string(protocol)}
+	}
+}
+
 func setupClient(cfg *Config) (*grpc.ClientConn, error) {
 	if cfg.Insecure {
 		return grpc.NewClient(cfg.OtelEndpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -225,10 +253,7 @@ func setupResource(ctx context.Context, cfg *Config) (*resource.Resource, error)
 	}
 
 	var otelResource *resource.Resource
-	otelResource, err = resource.Merge(
-		resource.Default(),
-		resourceFromEnv,
-	)
+	otelResource, err = mergeResource(resource.Default(), resourceFromEnv)
 	if err != nil {
 		return nil, &ErrDefaultResource{err}
 	}
@@ -248,19 +273,28 @@ func setupResource(ctx context.Context, cfg *Config) (*resource.Resource, error)
 	return otelResource, nil
 }
 
-// setupTraceProvider configures a trace provider
-func setupTraceProvider(ctx context.Context, cfg *Config, resource *resource.Resource) error {
-	conn, err := setupClient(cfg)
+// mergeResource merges b into a, with b winning on conflicting keys
+func mergeResource(a *resource.Resource, b *resource.Resource) (*resource.Resource, error) {
+	merged, err := resource.Merge(a, b)
 	if err != nil {
-		return &ErrGrpcConn{err}
+		if errors.Is(err, resource.ErrSchemaURLConflict) {
+			return merged, nil
+		}
+
+		return nil, err
 	}
 
-	traceExporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithGRPCConn(conn))
+	return merged, nil
+}
+
+// setupTraceProvider configures a trace provider
+func setupTraceProvider(ctx context.Context, cfg *Config, protocol Protocol, resource *resource.Resource) error {
+	traceExporter, err := setupTraceExporter(ctx, cfg, protocol)
 	if err != nil {
 		return &ErrTraceExporter{err}
 	}
 
-	traceProvider := getTraceProvider(traceExporter, resource, cfg.Lambda)
+	traceProvider := getTraceProvider(traceExporter, resource, cfg)
 
 	setTracerProvider(traceProvider, cfg.EnableSpanProfiles)
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
@@ -271,19 +305,67 @@ func setupTraceProvider(ctx context.Context, cfg *Config, resource *resource.Res
 	return nil
 }
 
-func getTraceProvider(exporter sdktrace.SpanExporter, resource *resource.Resource, lambda bool) *sdktrace.TracerProvider {
-	switch lambda {
-	case true:
+func setupTraceExporter(ctx context.Context, cfg *Config, protocol Protocol) (sdktrace.SpanExporter, error) {
+	switch protocol {
+	case ProtocolHTTP:
+		return setupHttpTraceExporter(ctx, cfg)
+	default:
+		return setupGrpcTraceExporter(ctx, cfg)
+	}
+}
+
+func setupHttpTraceExporter(ctx context.Context, cfg *Config) (sdktrace.SpanExporter, error) {
+	opts := make([]otlptracehttp.Option, 0, 2)
+
+	if cfg.ExportTimeout > 0 {
+		opts = append(opts, otlptracehttp.WithTimeout(cfg.ExportTimeout))
+	}
+
+	if cfg.DisableRetry {
+		opts = append(opts, otlptracehttp.WithRetry(otlptracehttp.RetryConfig{Enabled: false}))
+	}
+
+	traceExporter, err := otlptracehttp.New(ctx, opts...)
+	if err != nil {
+		return nil, &ErrTraceExporter{err}
+	}
+
+	return traceExporter, nil
+}
+
+func setupGrpcTraceExporter(ctx context.Context, cfg *Config) (sdktrace.SpanExporter, error) {
+	opts := make([]otlptracegrpc.Option, 0, 3)
+
+	conn, err := setupClient(cfg)
+	if err != nil {
+		return nil, &ErrGrpcConn{err}
+	}
+
+	opts = append(opts, otlptracegrpc.WithGRPCConn(conn))
+
+	if cfg.ExportTimeout > 0 {
+		opts = append(opts, otlptracegrpc.WithTimeout(cfg.ExportTimeout))
+	}
+
+	if cfg.DisableRetry {
+		opts = append(opts, otlptracegrpc.WithRetry(otlptracegrpc.RetryConfig{Enabled: false}))
+	}
+
+	traceExporter, err := otlptracegrpc.New(ctx, opts...)
+	if err != nil {
+		return nil, &ErrTraceExporter{err}
+	}
+
+	return traceExporter, nil
+}
+
+func getTraceProvider(exporter sdktrace.SpanExporter, resource *resource.Resource, cfg *Config) *sdktrace.TracerProvider {
+	switch {
+	case cfg.Lambda:
 		return sdktrace.NewTracerProvider(
 			sdktrace.WithResource(resource),
 			sdktrace.WithSampler(sdktrace.AlwaysSample()),
 			sdktrace.WithSyncer(exporter),
-		)
-	case false:
-		return sdktrace.NewTracerProvider(
-			sdktrace.WithResource(resource),
-			sdktrace.WithSampler(sdktrace.AlwaysSample()),
-			sdktrace.WithBatcher(exporter),
 		)
 	default:
 		return sdktrace.NewTracerProvider(
@@ -304,40 +386,81 @@ func setTracerProvider(tp trace.TracerProvider, enableSpanProfiles bool) {
 }
 
 // setupMeterProvider configures a meter provider
-func setupMeterProvider(ctx context.Context, cfg *Config, resource *resource.Resource) error {
-	conn, err := setupClient(cfg)
-	if err != nil {
-		return &ErrGrpcConn{err}
-	}
-
-	metricExporter, err := otlpmetricgrpc.New(ctx, otlpmetricgrpc.WithGRPCConn(conn))
+func setupMeterProvider(ctx context.Context, cfg *Config, protocol Protocol, resource *resource.Resource) error {
+	metricExporter, err := setupMetricExporter(ctx, cfg, protocol)
 	if err != nil {
 		return &ErrMetricExporter{err}
 	}
 
-	meterProvider := getMeterProvider(metricExporter, resource, cfg.Lambda)
+	meterProvider := getMeterProvider(metricExporter, resource, cfg)
 
 	otel.SetMeterProvider(meterProvider)
 
 	return nil
 }
 
-func getMeterProvider(exporter sdkmetric.Exporter, resource *resource.Resource, lambda bool) *sdkmetric.MeterProvider {
-	switch lambda {
-	case true:
+func setupMetricExporter(ctx context.Context, cfg *Config, protocol Protocol) (sdkmetric.Exporter, error) {
+	switch protocol {
+	case ProtocolHTTP:
+		return setupHttpMetricExporter(ctx, cfg)
+	default:
+		return setupGrpcMetricExporter(ctx, cfg)
+	}
+}
+
+func setupHttpMetricExporter(ctx context.Context, cfg *Config) (sdkmetric.Exporter, error) {
+	opts := make([]otlpmetrichttp.Option, 0, 2)
+
+	if cfg.ExportTimeout > 0 {
+		opts = append(opts, otlpmetrichttp.WithTimeout(cfg.ExportTimeout))
+	}
+
+	if cfg.DisableRetry {
+		opts = append(opts, otlpmetrichttp.WithRetry(otlpmetrichttp.RetryConfig{Enabled: false}))
+	}
+
+	metricExporter, err := otlpmetrichttp.New(ctx, opts...)
+	if err != nil {
+		return nil, &ErrMetricExporter{err}
+	}
+
+	return metricExporter, nil
+}
+
+func setupGrpcMetricExporter(ctx context.Context, cfg *Config) (sdkmetric.Exporter, error) {
+	opts := make([]otlpmetricgrpc.Option, 0, 3)
+
+	conn, err := setupClient(cfg)
+	if err != nil {
+		return nil, &ErrGrpcConn{err}
+	}
+
+	opts = append(opts, otlpmetricgrpc.WithGRPCConn(conn))
+
+	if cfg.ExportTimeout > 0 {
+		opts = append(opts, otlpmetricgrpc.WithTimeout(cfg.ExportTimeout))
+	}
+
+	if cfg.DisableRetry {
+		opts = append(opts, otlpmetricgrpc.WithRetry(otlpmetricgrpc.RetryConfig{Enabled: false}))
+	}
+
+	metricExporter, err := otlpmetricgrpc.New(ctx, opts...)
+	if err != nil {
+		return nil, &ErrMetricExporter{err}
+	}
+
+	return metricExporter, nil
+}
+
+func getMeterProvider(exporter sdkmetric.Exporter, resource *resource.Resource, cfg *Config) *sdkmetric.MeterProvider {
+	switch {
+	case cfg.Lambda:
 		return sdkmetric.NewMeterProvider(
 			sdkmetric.WithResource(resource),
 			sdkmetric.WithReader(sdkmetric.NewPeriodicReader(
 				exporter,
 				sdkmetric.WithInterval(500*time.Millisecond),
-			)),
-		)
-	case false:
-		return sdkmetric.NewMeterProvider(
-			sdkmetric.WithResource(resource),
-			sdkmetric.WithReader(sdkmetric.NewPeriodicReader(
-				exporter,
-				sdkmetric.WithInterval(1*time.Second),
 			)),
 		)
 	default:
