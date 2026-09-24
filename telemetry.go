@@ -320,7 +320,14 @@ func setupTraceExporter(ctx context.Context, cfg *Config, protocol Protocol) (sd
 }
 
 func setupHttpTraceExporter(ctx context.Context, cfg *Config) (sdktrace.SpanExporter, error) {
-	opts := make([]otlptracehttp.Option, 0, 2)
+	opts := make([]otlptracehttp.Option, 0, 3)
+
+	switch {
+	case cfg.Insecure:
+		opts = append(opts, otlptracehttp.WithInsecure())
+	case cfg.TlsConfig != nil:
+		opts = append(opts, otlptracehttp.WithTLSClientConfig(cfg.TlsConfig))
+	}
 
 	if cfg.ExportTimeout > 0 {
 		opts = append(opts, otlptracehttp.WithTimeout(cfg.ExportTimeout))
@@ -414,7 +421,14 @@ func setupMetricExporter(ctx context.Context, cfg *Config, protocol Protocol) (s
 }
 
 func setupHttpMetricExporter(ctx context.Context, cfg *Config) (sdkmetric.Exporter, error) {
-	opts := make([]otlpmetrichttp.Option, 0, 2)
+	opts := make([]otlpmetrichttp.Option, 0, 3)
+
+	switch {
+	case cfg.Insecure:
+		opts = append(opts, otlpmetrichttp.WithInsecure())
+	case cfg.TlsConfig != nil:
+		opts = append(opts, otlpmetrichttp.WithTLSClientConfig(cfg.TlsConfig))
+	}
 
 	if cfg.ExportTimeout > 0 {
 		opts = append(opts, otlpmetrichttp.WithTimeout(cfg.ExportTimeout))
