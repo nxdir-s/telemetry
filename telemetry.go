@@ -159,7 +159,7 @@ type Config struct {
 	Insecure           bool
 	EnableSpanProfiles bool
 	DisableRetry       bool
-	Views              []sdkmetric.View
+	MetricOpts         []sdkmetric.Option
 }
 
 // InitProviders initializes trace and metric providers
@@ -487,8 +487,8 @@ func getMeterProvider(exporter sdkmetric.Exporter, resource *resource.Resource, 
 		)),
 	}
 
-	for i := range cfg.Views {
-		opts = append(opts, sdkmetric.WithView(cfg.Views[i]))
+	if len(cfg.MetricOpts) > 0 {
+		opts = append(opts, cfg.MetricOpts...)
 	}
 
 	return sdkmetric.NewMeterProvider(opts...)
