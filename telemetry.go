@@ -159,6 +159,7 @@ type Config struct {
 	Insecure           bool
 	EnableSpanProfiles bool
 	DisableRetry       bool
+	Views              []sdkmetric.View
 }
 
 // InitProviders initializes trace and metric providers
@@ -473,22 +474,22 @@ func setupGrpcMetricExporter(ctx context.Context, cfg *Config) (sdkmetric.Export
 }
 
 func getMeterProvider(exporter sdkmetric.Exporter, resource *resource.Resource, cfg *Config) *sdkmetric.MeterProvider {
-	switch {
-	case cfg.Lambda:
-		return sdkmetric.NewMeterProvider(
-			sdkmetric.WithResource(resource),
-			sdkmetric.WithReader(sdkmetric.NewPeriodicReader(
-				exporter,
-				sdkmetric.WithInterval(500*time.Millisecond),
-			)),
-		)
-	default:
-		return sdkmetric.NewMeterProvider(
-			sdkmetric.WithResource(resource),
-			sdkmetric.WithReader(sdkmetric.NewPeriodicReader(
-				exporter,
-				sdkmetric.WithInterval(1*time.Second),
-			)),
-		)
+	interval := 1 * time.Second
+	if cfg.Lambda {
+		interval = 500 * time.Millisecond
 	}
+
+	opts := []sdkmetric.Option{
+		sdkmetric.WithResource(resource),
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(
+			exporter,
+			sdkmetric.WithInterval(interval),
+		)),
+	}
+
+	for i := range cfg.Views {
+		opts = append(opts, sdkmetric.WithView(cfg.Views[i]))
+	}
+
+	return sdkmetric.NewMeterProvider(opts...)
 }
